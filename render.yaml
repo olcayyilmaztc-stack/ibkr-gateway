@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: ibkr-gateway
+    runtime: docker
+    dockerfilePath: ./ibkr-gateway/Dockerfile
+    dockerContext: ./ibkr-gateway
+    plan: free
+    region: frankfurt
+    healthCheckPath: /
+    envVars: []

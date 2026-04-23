@@ -1,19 +1,24 @@
 FROM eclipse-temurin:8-jre
 
+# Install Node.js for the proxy
+RUN apt-get update && apt-get install -y curl && \
+    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    rm -rf /var/lib/apt/lists/*
+
 WORKDIR /gateway
 
 # Copy gateway files
 COPY clientportal.gw/ .
 
-# Use conf.yaml from our custom config
+# Use conf.yaml — gateway listens on port 5000 with SSL
 COPY conf.yaml root/conf.yaml
 
-EXPOSE 5000
+# Copy proxy
+COPY proxy.js proxy.js
+COPY start.sh start.sh
+RUN chmod +x start.sh
 
-CMD ["java", "-Dvertx.disableDnsResolver=true", \
-     "-Djava.net.preferIPv4Stack=true", \
-     "-Dvertx.logger-delegate-factory-class-name=io.vertx.core.logging.SLF4JLogDelegateFactory", \
-     "-Dnologback.statusListenerClass=ch.qos.logback.core.status.OnConsoleStatusListener", \
-     "-Dnolog4j.debug=true", "-Dnolog4j2.debug=true", \
-     "-classpath", "root:dist/ibgroup.web.core.iblink.router.clientportal.gw.jar:build/lib/runtime/*", \
-     "ibgroup.web.core.clientportal.gw.GatewayStart"]
+EXPOSE 10000
+
+CMD ["./start.sh"]
