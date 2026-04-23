@@ -1,7 +1,7 @@
 ip2loc: "US"
 proxyRemoteSsl: true
 proxyRemoteHost: "https://api.ibkr.com"
-listenPort: 5000
+listenPort: 10000
 listenSsl: false
 ccp: false
 svcEnvironment: "v1"
