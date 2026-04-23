@@ -4,36 +4,45 @@ const https = require("https");
 const GATEWAY_PORT = 5000;
 const PROXY_PORT = 10000;
 
-// Store session cookies — accumulated from browser requests after login
-let sessionCookies = {};
+// Authenticated session cookies — only set from successful (non-401) flows
+let authCookies = {};
+let isAuthenticated = false;
 
 // Allow self-signed certs from the local gateway
 const agent = new https.Agent({ rejectUnauthorized: false });
 
-function mergeCookies(cookieHeader) {
-  if (!cookieHeader) return;
-  cookieHeader.split(";").forEach((c) => {
-    const [key, ...rest] = c.trim().split("=");
-    if (key && rest.length) {
-      sessionCookies[key.trim()] = rest.join("=").trim();
-    }
-  });
-}
-
-function cookieString() {
-  return Object.entries(sessionCookies)
+function cookieString(obj) {
+  return Object.entries(obj)
     .map(([k, v]) => `${k}=${v}`)
     .join("; ");
 }
 
-function proxyRequest(clientReq, clientRes) {
-  const isApiCall = clientReq.url.startsWith("/v1/api/");
+function parseCookies(header) {
+  const cookies = {};
+  if (!header) return cookies;
+  header.split(";").forEach((c) => {
+    const eq = c.indexOf("=");
+    if (eq > 0) {
+      cookies[c.substring(0, eq).trim()] = c.substring(eq + 1).trim();
+    }
+  });
+  return cookies;
+}
 
-  // Capture cookies from browser requests (browser has them after login)
-  if (clientReq.headers.cookie) {
-    mergeCookies(clientReq.headers.cookie);
-    console.log("[proxy] Captured cookies from browser:", Object.keys(sessionCookies).join(", "));
+function proxyRequest(clientReq, clientRes) {
+  // Diagnostic endpoint
+  if (clientReq.url === "/proxy/status") {
+    clientRes.writeHead(200, { "Content-Type": "application/json" });
+    clientRes.end(JSON.stringify({
+      authenticated: isAuthenticated,
+      cookieKeys: Object.keys(authCookies),
+      hasCookies: Object.keys(authCookies).length > 0,
+    }));
+    return;
   }
+
+  const isApiCall = clientReq.url.startsWith("/v1/api/");
+  const hasBrowserCookies = !!clientReq.headers.cookie;
 
   // Build headers to forward
   const headers = {};
@@ -44,13 +53,9 @@ function proxyRequest(clientReq, clientRes) {
   }
   headers.host = `localhost:${GATEWAY_PORT}`;
 
-  // For API calls without cookies (from Vercel), inject stored session cookies
-  if (isApiCall && !clientReq.headers.cookie) {
-    const cookies = cookieString();
-    if (cookies) {
-      headers.cookie = cookies;
-      console.log("[proxy] Injecting stored cookies for API call:", clientReq.url);
-    }
+  // For requests without cookies (from Vercel), inject stored auth cookies
+  if (!hasBrowserCookies && isAuthenticated) {
+    headers.cookie = cookieString(authCookies);
   }
 
   const options = {
@@ -63,22 +68,37 @@ function proxyRequest(clientReq, clientRes) {
   };
 
   const proxyReq = https.request(options, (proxyRes) => {
-    // Also capture cookies from gateway responses
+    const status = proxyRes.statusCode;
+
+    // Capture cookies from gateway responses — but ONLY from non-401 responses
+    // that came from browser requests (not health checks or Vercel API calls)
     const setCookieHeaders = proxyRes.headers["set-cookie"];
-    if (setCookieHeaders) {
+    if (setCookieHeaders && hasBrowserCookies && status !== 401) {
       setCookieHeaders.forEach((sc) => {
-        const [pair] = sc.split(";");
-        const [key, ...rest] = pair.split("=");
-        if (key && rest.length) {
-          sessionCookies[key.trim()] = rest.join("=").trim();
+        const eq = sc.indexOf("=");
+        const semi = sc.indexOf(";");
+        if (eq > 0) {
+          const key = sc.substring(0, eq).trim();
+          const val = sc.substring(eq + 1, semi > 0 ? semi : undefined).trim();
+          authCookies[key] = val;
         }
       });
-      console.log("[proxy] Captured cookies from gateway response:", Object.keys(sessionCookies).join(", "));
+      isAuthenticated = true;
+      console.log("[proxy] Stored auth cookies from browser flow:", Object.keys(authCookies).join(", "));
+    }
+
+    // If a browser request gets a 200 on auth/status, capture those cookies too
+    if (hasBrowserCookies && status === 200 && clientReq.url.includes("/auth/status")) {
+      // Also store the cookies the browser sent
+      const browserCookies = parseCookies(clientReq.headers.cookie);
+      Object.assign(authCookies, browserCookies);
+      isAuthenticated = true;
+      console.log("[proxy] Stored browser cookies after auth success:", Object.keys(authCookies).join(", "));
     }
 
     // Forward response
     const responseHeaders = { ...proxyRes.headers };
-    clientRes.writeHead(proxyRes.statusCode, responseHeaders);
+    clientRes.writeHead(status, responseHeaders);
     proxyRes.pipe(clientRes, { end: true });
   });
 
@@ -93,15 +113,6 @@ function proxyRequest(clientReq, clientRes) {
 
 const server = http.createServer(proxyRequest);
 server.listen(PROXY_PORT, () => {
-  console.log(`[proxy] Listening on port ${PROXY_PORT}, forwarding to gateway on ${GATEWAY_PORT}`);
-  console.log("[proxy] Login via browser to capture session cookies");
+  console.log(`[proxy] Listening on port ${PROXY_PORT}`);
+  console.log("[proxy] Login via browser, then visit /proxy/status to verify");
 });
-
-// Also add a debug endpoint
-http.createServer((req, res) => {
-  res.writeHead(200, { "Content-Type": "application/json" });
-  res.end(JSON.stringify({
-    hasCookies: Object.keys(sessionCookies).length > 0,
-    cookieKeys: Object.keys(sessionCookies),
-  }));
-}).listen(10001);
